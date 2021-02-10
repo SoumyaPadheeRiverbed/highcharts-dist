@@ -1,9 +1,9 @@
 /**
- * @license Highstock JS v9.0.0 (2021-02-02)
+ * @license Highstock JS v9.0.0 (2021-02-10)
  *
  * Highstock as a plugin for Highcharts
  *
- * (c) 2010-2019 Torstein Honsi
+ * (c) 2010-2021 Torstein Honsi
  *
  * License: www.highcharts.com/license
  */
@@ -7519,6 +7519,8 @@
              * @function Highcharts.seriesTypes.flags#invertGroups
              */
             invertGroups: noop,
+            // Flags series group should not be invertible (#14063).
+            invertible: false,
             noSharedTooltip: true,
             pointClass: FlagsPoint,
             sorted: false,
@@ -7858,6 +7860,7 @@
                  * @sample {highstock} stock/rangeselector/enabled/
                  *         Disable the range selector
                  *
+                 * @type {boolean|undefined}
                  * @default {highstock} true
                  */
                 enabled: void 0,
@@ -10530,7 +10533,7 @@
             // Call base method
             seriesInit.apply(this, arguments);
             // Set comparison mode
-            this.setCompare(this.options.compare);
+            this.initCompare(this.options.compare);
         };
         /**
          * Highstock only. Set the
@@ -10544,6 +10547,18 @@
          *        Can be one of `null` (default), `"percent"` or `"value"`.
          */
         Series.prototype.setCompare = function (compare) {
+            this.initCompare(compare);
+            // Survive to export, #5485
+            this.userOptions.compare = compare;
+        };
+        /**
+         * @ignore
+         * @function Highcharts.Series#initCompare
+         *
+         * @param {string} [compare]
+         *        Can be one of `null` (default), `"percent"` or `"value"`.
+         */
+        Series.prototype.initCompare = function (compare) {
             // Set or unset the modifyValue method
             this.modifyValue = (compare === 'value' || compare === 'percent') ?
                 function (value, point) {
@@ -10568,8 +10583,6 @@
                     return 0;
                 } :
                 null;
-            // Survive to export, #5485
-            this.userOptions.compare = compare;
             // Mark dirty
             if (this.chart.hasRendered) {
                 this.isDirty = true;

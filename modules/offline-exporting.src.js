@@ -1,9 +1,9 @@
 /**
- * @license Highcharts JS v9.0.0 (2021-02-02)
+ * @license Highcharts JS v9.0.0 (2021-02-10)
  *
  * Client side exporting module
  *
- * (c) 2015-2019 Torstein Honsi / Oystein Moseng
+ * (c) 2015-2021 Torstein Honsi / Oystein Moseng
  *
  * License: www.highcharts.com/license
  */
@@ -154,6 +154,7 @@
         var addEvent = U.addEvent,
             error = U.error,
             extend = U.extend,
+            fireEvent = U.fireEvent,
             getOptions = U.getOptions,
             merge = U.merge;
         var downloadURL = DownloadURL.downloadURL;
@@ -667,7 +668,7 @@
                         'for charts with embedded HTML');
                 }
                 else {
-                    downloadSVGLocal(svg, extend({ filename: chart.getFilename() }, options), fallbackToExportServer);
+                    downloadSVGLocal(svg, extend({ filename: chart.getFilename() }, options), fallbackToExportServer, function () { return fireEvent(chart, 'exportChartLocalSuccess'); });
                 }
             }, 
             // Return true if the SVG contains images with external data. With the

@@ -1,9 +1,9 @@
 /**
- * @license Highcharts JS v9.0.0 (2021-02-02)
+ * @license Highcharts JS v9.0.0 (2021-02-10)
  *
  * Boost module
  *
- * (c) 2010-2019 Highsoft AS
+ * (c) 2010-2021 Highsoft AS
  * Author: Torstein Honsi
  *
  * License: www.highcharts.com/license
@@ -1185,10 +1185,10 @@
                         beginSegment();
                         continue;
                     }
-                    if (nx && nx >= xMin && nx <= xMax) {
+                    if (nx && nx >= xMin && nx <= xMax && !series.is('scatter')) {
                         nextInside = true;
                     }
-                    if (px && px >= xMin && px <= xMax) {
+                    if (px && px >= xMin && px <= xMax && !series.is('scatter')) {
                         prevInside = true;
                     }
                     if (isRange) {
@@ -1279,27 +1279,6 @@
                             // x = plotWidth;
                         }
                     }
-                    if (drawAsBar) {
-                        // maxVal = y;
-                        minVal = low;
-                        if (low === false || typeof low === 'undefined') {
-                            if (y < 0) {
-                                minVal = y;
-                            }
-                            else {
-                                minVal = 0;
-                            }
-                        }
-                        if (!isRange && !isStacked) {
-                            minVal = Math.max(threshold === null ? yMin : threshold, // #5268
-                            yMin); // #8731
-                        }
-                        if (!settings.useGPUTranslations) {
-                            minVal = yAxis.toPixels(minVal, true);
-                        }
-                        // Need to add an extra point here
-                        vertice(x, minVal, 0, 0, pcolor);
-                    }
                     // No markers on out of bounds things.
                     // Out of bound things are shown if and only if the next
                     // or previous point is inside the rect.
@@ -1329,6 +1308,27 @@
                             ++skipped;
                         }
                         continue;
+                    }
+                    if (drawAsBar) {
+                        // maxVal = y;
+                        minVal = low;
+                        if (low === false || typeof low === 'undefined') {
+                            if (y < 0) {
+                                minVal = y;
+                            }
+                            else {
+                                minVal = 0;
+                            }
+                        }
+                        if (!isRange && !isStacked) {
+                            minVal = Math.max(threshold === null ? yMin : threshold, // #5268
+                            yMin); // #8731
+                        }
+                        if (!settings.useGPUTranslations) {
+                            minVal = yAxis.toPixels(minVal, true);
+                        }
+                        // Need to add an extra point here
+                        vertice(x, minVal, 0, 0, pcolor);
                     }
                     // Do step line if enabled.
                     // Draws an additional point at the old Y at the new X.
@@ -2557,6 +2557,7 @@
                 fill: true,
                 sampling: true
             });
+            Chart.prototype.propsRequireUpdateSeries.push('boost');
             // Take care of the canvas blitting
             Chart.prototype.callbacks.push(function (chart) {
                 /**

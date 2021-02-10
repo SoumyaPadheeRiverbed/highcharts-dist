@@ -1,7 +1,7 @@
 /**
- * @license Highcharts Gantt JS v9.0.0 (2021-02-02)
+ * @license Highcharts Gantt JS v9.0.0 (2021-02-10)
  *
- * (c) 2017-2018 Lars Cabrera, Torstein Honsi, Jon Arild Nygard & Oystein Moseng
+ * (c) 2017-2021 Lars Cabrera, Torstein Honsi, Jon Arild Nygard & Oystein Moseng
  *
  * License: www.highcharts.com/license
  */
@@ -1737,12 +1737,16 @@
                 box = (el.parentElement || el.parentNode) ?
                     el.getBoundingClientRect() :
                     { top: 0,
-                left: 0 };
+                left: 0,
+                width: 0,
+                height: 0 };
             return {
                 top: box.top + (win.pageYOffset || docElem.scrollTop) -
                     (docElem.clientTop || 0),
                 left: box.left + (win.pageXOffset || docElem.scrollLeft) -
-                    (docElem.clientLeft || 0)
+                    (docElem.clientLeft || 0),
+                width: box.width,
+                height: box.height
             };
         }
         /* eslint-disable valid-jsdoc */
@@ -3520,6 +3524,12 @@
         * @type {string|undefined}
         */
         ''; // detach doclets above
+        // In IE8, DOMParser is undefined. IE9 and batik are only able to parse XML.
+        var hasValidDOMParser = false;
+        try {
+            hasValidDOMParser = Boolean(new DOMParser().parseFromString('', 'text/html'));
+        }
+        catch (e) { } // eslint-disable-line no-empty
         /**
          * Represents an AST
          * @private
@@ -3667,17 +3677,13 @@
                 var nodes = [];
                 var doc;
                 var body;
-                if (
-                // IE9 is only able to parse XML
-                /MSIE 9.0/.test(navigator.userAgent) ||
-                    // IE8-
-                    typeof DOMParser === 'undefined') {
+                if (hasValidDOMParser) {
+                    doc = new DOMParser().parseFromString(markup, 'text/html');
+                }
+                else {
                     body = createElement('div');
                     body.innerHTML = markup;
                     doc = { body: body };
-                }
-                else {
-                    doc = new DOMParser().parseFromString(markup, 'text/html');
                 }
                 var appendChildNodes = function (node,
                     addTo) {
@@ -6381,8 +6387,10 @@
                         if ((eventType === 'mouseenter' ||
                             eventType === 'mouseleave') &&
                             e.relatedTarget instanceof Element &&
-                            (label.element.contains(e.relatedTarget) ||
-                                span.element.contains(e.relatedTarget))) {
+                            (
+                            // #14110
+                            label.element.compareDocumentPosition(e.relatedTarget) & Node.DOCUMENT_POSITION_CONTAINED_BY ||
+                                span.element.compareDocumentPosition(e.relatedTarget) & Node.DOCUMENT_POSITION_CONTAINED_BY)) {
                             return;
                         }
                         handler.call(label.element, e);
@@ -7045,10 +7053,8 @@
             isObject = U.isObject,
             isString = U.isString,
             merge = U.merge,
-            objectEach = U.objectEach,
             pick = U.pick,
             pInt = U.pInt,
-            splat = U.splat,
             uniqueKey = U.uniqueKey;
         /**
          * A clipping rectangle that can be applied to one or more {@link SVGElement}
@@ -7255,10 +7261,10 @@
             isMS = H.isMS,
             isWebKit = H.isWebKit,
             noop = H.noop,
-            svg = H.svg,
             SVG_NS = H.SVG_NS,
             symbolSizes = H.symbolSizes,
-            win = H.win;
+            win = H.win,
+            hasInternalReferenceBug;
         /**
          * Allows direct access to the Highcharts rendering layer in order to draw
          * primitive shapes like circles, rectangles, paths or text directly on a chart,
@@ -7422,17 +7428,7 @@
                 this.box = element;
                 this.boxWrapper = boxWrapper;
                 renderer.alignedObjects = [];
-                // #24, #672, #1070
-                this.url = ((isFirefox || isWebKit) &&
-                    doc.getElementsByTagName('base').length) ?
-                    win.location.href
-                        .split('#')[0] // remove the hash
-                        .replace(/<[^>]*>/g, '') // wing cut HTML
-                        // escape parantheses and quotes
-                        .replace(/([\('\)])/g, '\\$1')
-                        // replace spaces (needed for Safari only)
-                        .replace(/ /g, '%20') :
-                    '';
+                this.url = this.getReferenceURL();
                 // Add description
                 desc = this.createElement('desc').add();
                 desc.element.appendChild(doc.createTextNode('Created with Highcharts 9.0.0'));
@@ -7488,6 +7484,66 @@
             SVGRenderer.prototype.definition = function (def) {
                 var ast = new AST([def]);
                 return ast.addToDOM(this.defs.element);
+            };
+            /**
+             * Get the prefix needed for internal URL references to work in certain
+             * cases. Some older browser versions had a bug where internal url
+             * references in SVG attributes, on the form `url(#some-id)`, would fail if
+             * a base tag was present in the page. There were also issues with
+             * `history.pushState` related to this prefix.
+             *
+             * Related issues: #24, #672, #1070, #5244.
+             *
+             * The affected browsers are:
+             * - Chrome <= 53 (May 2018)
+             * - Firefox <= 51 (January 2017)
+             * - Safari/Mac <= 12.1 (2018 or 2019)
+             * - Safari/iOS <= 13
+             *
+             * @todo Remove this hack when time has passed. All the affected browsers
+             * are evergreens, so it is increasingly unlikely that users are affected by
+             * the bug.
+             *
+             * @return {string}
+             * The prefix to use. An empty string for modern browsers.
+             */
+            SVGRenderer.prototype.getReferenceURL = function () {
+                if ((isFirefox || isWebKit) &&
+                    doc.getElementsByTagName('base').length) {
+                    // Detect if a clip path is taking effect by performing a hit test
+                    // outside the clipped area. If the hit element is the rectangle
+                    // that was supposed to be clipped, the bug is present. This only
+                    // has to be performed once per page load, so we store the result
+                    // locally in the module.
+                    if (!defined(hasInternalReferenceBug)) {
+                        var id = uniqueKey();
+                        var svg = "<svg width=\"8\" height=\"8\">\n                <defs>\n                    <clipPath id=\"" + id + "\"><rect width=\"4\" height=\"4\" />\n                </defs>\n                <rect id=\"hitme\" width=\"8\" height=\"8\"\n                    clip-path=\"url(#" + id + ")\" fill=\"rgba(0,0,0,0.001)\" />\n                </svg>";
+                        var div = createElement('div',
+                            void 0, {
+                                position: 'fixed',
+                                top: 0,
+                                left: 0,
+                                zIndex: 9e5
+                            },
+                            doc.body,
+                            true);
+                        div.innerHTML = svg;
+                        var hitElement = doc.elementFromPoint(6, 6);
+                        hasInternalReferenceBug =
+                            (hitElement && hitElement.id) === 'hitme';
+                        doc.body.removeChild(div);
+                    }
+                    if (hasInternalReferenceBug) {
+                        return win.location.href
+                            .split('#')[0] // remove the hash
+                            .replace(/<[^>]*>/g, '') // wing cut HTML
+                            // escape parantheses and quotes
+                            .replace(/([\('\)])/g, '\\$1')
+                            // replace spaces (needed for Safari only)
+                            .replace(/ /g, '%20');
+                    }
+                }
+                return '';
             };
             /**
              * Get the global style setting for the renderer.
@@ -13550,7 +13606,7 @@
                  */
                 borderRadius: 3,
                 /**
-                 * For series on a datetime axes, the date format in the tooltip's
+                 * For series on datetime axes, the date format in the tooltip's
                  * header will by default be guessed based on the closest data points.
                  * This member gives the default string representations used for
                  * each unit. For an overview of the replacement codes, see
@@ -23222,8 +23278,9 @@
                  */
                 firstDimension = function (dim, outerSize, innerSize, scaledInnerSize, // #11329
                 point, min, max) {
-                    var scaledDist = dim === 'y' ?
-                            scaleY(distance) : scaleX(distance),
+                    var scaledDist = outside ?
+                            (dim === 'y' ? scaleY(distance) : scaleX(distance)) :
+                            distance,
                         scaleDiff = (innerSize - scaledInnerSize) / 2,
                         roomLeft = scaledInnerSize < point - distance,
                         roomRight = point + distance + scaledInnerSize < outerSize,
@@ -24650,14 +24707,15 @@
                     scaleX: 1,
                     scaleY: 1
                 };
+                var offsetWidth = container.offsetWidth;
+                var offsetHeight = container.offsetHeight;
                 // #13342 - tooltip was not visible in Chrome, when chart
                 // updates height.
-                if (container.offsetWidth > 2 && // #13342
-                    container.offsetHeight > 2 && // #13342
-                    container.getBoundingClientRect) {
-                    var bb = container.getBoundingClientRect();
-                    this.chartPosition.scaleX = bb.width / container.offsetWidth;
-                    this.chartPosition.scaleY = bb.height / container.offsetHeight;
+                if (offsetWidth > 2 && // #13342
+                    offsetHeight > 2 // #13342
+                ) {
+                    this.chartPosition.scaleX = pos.width / offsetWidth;
+                    this.chartPosition.scaleY = pos.height / offsetHeight;
                 }
                 return this.chartPosition;
             };
@@ -29221,7 +29279,7 @@
             Chart.prototype.redraw = function (animation) {
                 fireEvent(this, 'beforeRedraw');
                 var chart = this,
-                    axes = chart.axes,
+                    axes = chart.hasCartesianSeries ? chart.axes : chart.colorAxis || [],
                     series = chart.series,
                     pointer = chart.pointer,
                     legend = chart.legend,
@@ -29229,7 +29287,6 @@
                     redrawLegend = chart.isDirtyLegend,
                     hasStackedSeries,
                     hasDirtyStacks,
-                    hasCartesianSeries = chart.hasCartesianSeries,
                     isDirtyBox = chart.isDirtyBox,
                     i,
                     serie,
@@ -29299,38 +29356,34 @@
                 if (hasStackedSeries) {
                     chart.getStacks();
                 }
-                if (hasCartesianSeries) {
-                    // set axes scales
-                    axes.forEach(function (axis) {
-                        axis.updateNames();
-                        axis.setScale();
-                    });
-                }
+                // set axes scales
+                axes.forEach(function (axis) {
+                    axis.updateNames();
+                    axis.setScale();
+                });
                 chart.getMargins(); // #3098
-                if (hasCartesianSeries) {
-                    // If one axis is dirty, all axes must be redrawn (#792, #2169)
-                    axes.forEach(function (axis) {
-                        if (axis.isDirty) {
-                            isDirtyBox = true;
-                        }
-                    });
-                    // redraw axes
-                    axes.forEach(function (axis) {
-                        // Fire 'afterSetExtremes' only if extremes are set
-                        var key = axis.min + ',' + axis.max;
-                        if (axis.extKey !== key) { // #821, #4452
-                            axis.extKey = key;
-                            // prevent a recursive call to chart.redraw() (#1119)
-                            afterRedraw.push(function () {
-                                fireEvent(axis, 'afterSetExtremes', extend(axis.eventArgs, axis.getExtremes())); // #747, #751
-                                delete axis.eventArgs;
-                            });
-                        }
-                        if (isDirtyBox || hasStackedSeries) {
-                            axis.redraw();
-                        }
-                    });
-                }
+                // If one axis is dirty, all axes must be redrawn (#792, #2169)
+                axes.forEach(function (axis) {
+                    if (axis.isDirty) {
+                        isDirtyBox = true;
+                    }
+                });
+                // redraw axes
+                axes.forEach(function (axis) {
+                    // Fire 'afterSetExtremes' only if extremes are set
+                    var key = axis.min + ',' + axis.max;
+                    if (axis.extKey !== key) { // #821, #4452
+                        axis.extKey = key;
+                        // prevent a recursive call to chart.redraw() (#1119)
+                        afterRedraw.push(function () {
+                            fireEvent(axis, 'afterSetExtremes', extend(axis.eventArgs, axis.getExtremes())); // #747, #751
+                            delete axis.eventArgs;
+                        });
+                    }
+                    if (isDirtyBox || hasStackedSeries) {
+                        axis.redraw();
+                    }
+                });
                 // the plot areas size has changed
                 if (isDirtyBox) {
                     chart.drawChartBox();
@@ -30776,6 +30829,7 @@
                     }
                 }
                 chart.render();
+                chart.pointer.getChartPosition(); // #14973
                 // Fire the load event if there are no external images
                 if (!chart.renderer.imgCount && !chart.hasLoaded) {
                     chart.onload();
@@ -31405,7 +31459,7 @@
                     alignTo = (btnOptions.relativeTo === 'chart' ||
                         btnOptions.relativeTo === 'spaceBox' ?
                         null :
-                        'plotBox');
+                        this.scrollablePlotBox || 'plotBox');
                 /**
                  * @private
                  */
@@ -31552,9 +31606,9 @@
                                 halfPointRange * pointRangeDirection, flipped = panMax < panMin, newMin = flipped ? panMax : panMin, newMax = flipped ? panMin : panMax, hasVerticalPanning = axis.hasVerticalPanning(), paddedMin, paddedMax, spill, panningState = axis.panningState;
                         // General calculations of panning state.
                         // This is related to using vertical panning. (#11315).
-                        axis.series.forEach(function (series) {
-                            if (hasVerticalPanning &&
-                                !isX && (!panningState || panningState.isDirty)) {
+                        if (hasVerticalPanning &&
+                            !isX && (!panningState || panningState.isDirty)) {
+                            axis.series.forEach(function (series) {
                                 var processedData = series.getProcessedData(true),
                                     dataExtremes = series.getExtremes(processedData.yData,
                                     true);
@@ -31569,8 +31623,8 @@
                                     panningState.startMin = Math.min(pick(series.options.threshold, Infinity), dataExtremes.dataMin, panningState.startMin);
                                     panningState.startMax = Math.max(pick(series.options.threshold, -Infinity), dataExtremes.dataMax, panningState.startMax);
                                 }
-                            }
-                        });
+                            });
+                        }
                         paddedMin = Math.min(pick(panningState === null || panningState === void 0 ? void 0 : panningState.startMin, extremes.dataMin), halfPointRange ?
                             extremes.min :
                             axis.toValue(axis.toPixels(extremes.min) -
@@ -31840,399 +31894,6 @@
         ''; // include doclets above in transpilat
 
         return Chart;
-    });
-    _registerModule(_modules, 'Extensions/ScrollablePlotArea.js', [_modules['Core/Animation/AnimationUtilities.js'], _modules['Core/Chart/Chart.js'], _modules['Core/Globals.js'], _modules['Core/Utilities.js']], function (A, Chart, H, U) {
-        /* *
-         *
-         *  (c) 2010-2021 Torstein Honsi
-         *
-         *  License: www.highcharts.com/license
-         *
-         *  !!!!!!! SOURCE GETS TRANSPILED BY TYPESCRIPT. EDIT TS FILE ONLY. !!!!!!!
-         *
-         *  Highcharts feature to make the Y axis stay fixed when scrolling the chart
-         *  horizontally on mobile devices. Supports left and right side axes.
-         */
-        /*
-        WIP on vertical scrollable plot area (#9378). To do:
-        - Bottom axis positioning
-        - Test with Gantt
-        - Look for size optimizing the code
-        - API and demos
-         */
-        var stop = A.stop;
-        var addEvent = U.addEvent,
-            createElement = U.createElement,
-            pick = U.pick;
-        /**
-         * Options for a scrollable plot area. This feature provides a minimum size for
-         * the plot area of the chart. If the size gets smaller than this, typically
-         * on mobile devices, a native browser scrollbar is presented. This scrollbar
-         * provides smooth scrolling for the contents of the plot area, whereas the
-         * title, legend and unaffected axes are fixed.
-         *
-         * Since v7.1.2, a scrollable plot area can be defined for either horizontal or
-         * vertical scrolling, depending on whether the `minWidth` or `minHeight`
-         * option is set.
-         *
-         * @sample highcharts/chart/scrollable-plotarea
-         *         Scrollable plot area
-         * @sample highcharts/chart/scrollable-plotarea-vertical
-         *         Vertically scrollable plot area
-         * @sample {gantt} highcharts/chart/scrollable-plotarea-vertical
-         *         Gantt chart with vertically scrollable plot area
-         *
-         * @since     6.1.0
-         * @product   highcharts gantt
-         * @apioption chart.scrollablePlotArea
-         */
-        /**
-         * The minimum height for the plot area. If it gets smaller than this, the plot
-         * area will become scrollable.
-         *
-         * @type      {number}
-         * @apioption chart.scrollablePlotArea.minHeight
-         */
-        /**
-         * The minimum width for the plot area. If it gets smaller than this, the plot
-         * area will become scrollable.
-         *
-         * @type      {number}
-         * @apioption chart.scrollablePlotArea.minWidth
-         */
-        /**
-         * The initial scrolling position of the scrollable plot area. Ranges from 0 to
-         * 1, where 0 aligns the plot area to the left and 1 aligns it to the right.
-         * Typically we would use 1 if the chart has right aligned Y axes.
-         *
-         * @type      {number}
-         * @apioption chart.scrollablePlotArea.scrollPositionX
-         */
-        /**
-         * The initial scrolling position of the scrollable plot area. Ranges from 0 to
-         * 1, where 0 aligns the plot area to the top and 1 aligns it to the bottom.
-         *
-         * @type      {number}
-         * @apioption chart.scrollablePlotArea.scrollPositionY
-         */
-        /**
-         * The opacity of mask applied on one of the sides of the plot
-         * area.
-         *
-         * @sample {highcharts} highcharts/chart/scrollable-plotarea-opacity
-         *         Disabled opacity for the mask
-         *
-         * @type        {number}
-         * @default     0.85
-         * @since       7.1.1
-         * @apioption   chart.scrollablePlotArea.opacity
-         */
-        ''; // detach API doclets
-        /* eslint-disable no-invalid-this, valid-jsdoc */
-        addEvent(Chart, 'afterSetChartSize', function (e) {
-            var scrollablePlotArea = this.options.chart.scrollablePlotArea,
-                scrollableMinWidth = scrollablePlotArea && scrollablePlotArea.minWidth,
-                scrollableMinHeight = scrollablePlotArea && scrollablePlotArea.minHeight,
-                scrollablePixelsX,
-                scrollablePixelsY,
-                corrections;
-            if (!this.renderer.forExport) {
-                // The amount of pixels to scroll, the difference between chart
-                // width and scrollable width
-                if (scrollableMinWidth) {
-                    this.scrollablePixelsX = scrollablePixelsX = Math.max(0, scrollableMinWidth - this.chartWidth);
-                    if (scrollablePixelsX) {
-                        this.plotWidth += scrollablePixelsX;
-                        if (this.inverted) {
-                            this.clipBox.height += scrollablePixelsX;
-                            this.plotBox.height += scrollablePixelsX;
-                        }
-                        else {
-                            this.clipBox.width += scrollablePixelsX;
-                            this.plotBox.width += scrollablePixelsX;
-                        }
-                        corrections = {
-                            // Corrections for right side
-                            1: { name: 'right', value: scrollablePixelsX }
-                        };
-                    }
-                    // Currently we can only do either X or Y
-                }
-                else if (scrollableMinHeight) {
-                    this.scrollablePixelsY = scrollablePixelsY = Math.max(0, scrollableMinHeight - this.chartHeight);
-                    if (scrollablePixelsY) {
-                        this.plotHeight += scrollablePixelsY;
-                        if (this.inverted) {
-                            this.clipBox.width += scrollablePixelsY;
-                            this.plotBox.width += scrollablePixelsY;
-                        }
-                        else {
-                            this.clipBox.height += scrollablePixelsY;
-                            this.plotBox.height += scrollablePixelsY;
-                        }
-                        corrections = {
-                            2: { name: 'bottom', value: scrollablePixelsY }
-                        };
-                    }
-                }
-                if (corrections && !e.skipAxes) {
-                    this.axes.forEach(function (axis) {
-                        // For right and bottom axes, only fix the plot line length
-                        if (corrections[axis.side]) {
-                            // Get the plot lines right in getPlotLinePath,
-                            // temporarily set it to the adjusted plot width.
-                            axis.getPlotLinePath = function () {
-                                var marginName = corrections[axis.side].name,
-                                    correctionValue = corrections[axis.side].value, 
-                                    // axis.right or axis.bottom
-                                    margin = this[marginName],
-                                    path;
-                                // Temporarily adjust
-                                this[marginName] = margin - correctionValue;
-                                path = H.Axis.prototype.getPlotLinePath.apply(this, arguments);
-                                // Reset
-                                this[marginName] = margin;
-                                return path;
-                            };
-                        }
-                        else {
-                            // Apply the corrected plotWidth
-                            axis.setAxisSize();
-                            axis.setAxisTranslation();
-                        }
-                    });
-                }
-            }
-        });
-        addEvent(Chart, 'render', function () {
-            if (this.scrollablePixelsX || this.scrollablePixelsY) {
-                if (this.setUpScrolling) {
-                    this.setUpScrolling();
-                }
-                this.applyFixed();
-            }
-            else if (this.fixedDiv) { // Has been in scrollable mode
-                this.applyFixed();
-            }
-        });
-        /**
-         * @private
-         * @function Highcharts.Chart#setUpScrolling
-         * @return {void}
-         */
-        Chart.prototype.setUpScrolling = function () {
-            var _this = this;
-            var attribs = {
-                    WebkitOverflowScrolling: 'touch',
-                    overflowX: 'hidden',
-                    overflowY: 'hidden'
-                };
-            if (this.scrollablePixelsX) {
-                attribs.overflowX = 'auto';
-            }
-            if (this.scrollablePixelsY) {
-                attribs.overflowY = 'auto';
-            }
-            // Insert a container with position relative
-            // that scrolling and fixed container renders to (#10555)
-            this.scrollingParent = createElement('div', {
-                className: 'highcharts-scrolling-parent'
-            }, {
-                position: 'relative'
-            }, this.renderTo);
-            // Add the necessary divs to provide scrolling
-            this.scrollingContainer = createElement('div', {
-                'className': 'highcharts-scrolling'
-            }, attribs, this.scrollingParent);
-            // On scroll, reset the chart position because it applies to the scrolled
-            // container
-            addEvent(this.scrollingContainer, 'scroll', function () {
-                if (_this.pointer) {
-                    delete _this.pointer.chartPosition;
-                }
-            });
-            this.innerContainer = createElement('div', {
-                'className': 'highcharts-inner-container'
-            }, null, this.scrollingContainer);
-            // Now move the container inside
-            this.innerContainer.appendChild(this.container);
-            // Don't run again
-            this.setUpScrolling = null;
-        };
-        /**
-         * These elements are moved over to the fixed renderer and stay fixed when the
-         * user scrolls the chart
-         * @private
-         */
-        Chart.prototype.moveFixedElements = function () {
-            var container = this.container,
-                fixedRenderer = this.fixedRenderer,
-                fixedSelectors = [
-                    '.highcharts-contextbutton',
-                    '.highcharts-credits',
-                    '.highcharts-legend',
-                    '.highcharts-legend-checkbox',
-                    '.highcharts-navigator-series',
-                    '.highcharts-navigator-xaxis',
-                    '.highcharts-navigator-yaxis',
-                    '.highcharts-navigator',
-                    '.highcharts-reset-zoom',
-                    '.highcharts-scrollbar',
-                    '.highcharts-subtitle',
-                    '.highcharts-title'
-                ],
-                axisClass;
-            if (this.scrollablePixelsX && !this.inverted) {
-                axisClass = '.highcharts-yaxis';
-            }
-            else if (this.scrollablePixelsX && this.inverted) {
-                axisClass = '.highcharts-xaxis';
-            }
-            else if (this.scrollablePixelsY && !this.inverted) {
-                axisClass = '.highcharts-xaxis';
-            }
-            else if (this.scrollablePixelsY && this.inverted) {
-                axisClass = '.highcharts-yaxis';
-            }
-            if (axisClass) {
-                fixedSelectors.push(axisClass + ":not(.highcharts-radial-axis)", axisClass + "-labels:not(.highcharts-radial-axis-labels)");
-            }
-            fixedSelectors.forEach(function (className) {
-                [].forEach.call(container.querySelectorAll(className), function (elem) {
-                    (elem.namespaceURI === fixedRenderer.SVG_NS ?
-                        fixedRenderer.box :
-                        fixedRenderer.box.parentNode).appendChild(elem);
-                    elem.style.pointerEvents = 'auto';
-                });
-            });
-        };
-        /**
-         * @private
-         * @function Highcharts.Chart#applyFixed
-         * @return {void}
-         */
-        Chart.prototype.applyFixed = function () {
-            var _a,
-                _b,
-                _c;
-            var fixedRenderer,
-                scrollableWidth,
-                scrollableHeight,
-                firstTime = !this.fixedDiv,
-                chartOptions = this.options.chart,
-                scrollableOptions = chartOptions.scrollablePlotArea;
-            // First render
-            if (firstTime) {
-                this.fixedDiv = createElement('div', {
-                    className: 'highcharts-fixed'
-                }, {
-                    position: 'absolute',
-                    overflow: 'hidden',
-                    pointerEvents: 'none',
-                    zIndex: (((_a = chartOptions.style) === null || _a === void 0 ? void 0 : _a.zIndex) || 0) + 2,
-                    top: 0
-                }, null, true);
-                (_b = this.scrollingContainer) === null || _b === void 0 ? void 0 : _b.parentNode.insertBefore(this.fixedDiv, this.scrollingContainer);
-                this.renderTo.style.overflow = 'visible';
-                this.fixedRenderer = fixedRenderer = new H.Renderer(this.fixedDiv, this.chartWidth, this.chartHeight, (_c = this.options.chart) === null || _c === void 0 ? void 0 : _c.style);
-                // Mask
-                this.scrollableMask = fixedRenderer
-                    .path()
-                    .attr({
-                    fill: this.options.chart.backgroundColor || '#fff',
-                    'fill-opacity': pick(scrollableOptions.opacity, 0.85),
-                    zIndex: -1
-                })
-                    .addClass('highcharts-scrollable-mask')
-                    .add();
-                this.moveFixedElements();
-                addEvent(this, 'afterShowResetZoom', this.moveFixedElements);
-                addEvent(this, 'afterLayOutTitles', this.moveFixedElements);
-            }
-            else {
-                // Set the size of the fixed renderer to the visible width
-                this.fixedRenderer.setSize(this.chartWidth, this.chartHeight);
-            }
-            // Increase the size of the scrollable renderer and background
-            scrollableWidth = this.chartWidth + (this.scrollablePixelsX || 0);
-            scrollableHeight = this.chartHeight + (this.scrollablePixelsY || 0);
-            stop(this.container);
-            this.container.style.width = scrollableWidth + 'px';
-            this.container.style.height = scrollableHeight + 'px';
-            this.renderer.boxWrapper.attr({
-                width: scrollableWidth,
-                height: scrollableHeight,
-                viewBox: [0, 0, scrollableWidth, scrollableHeight].join(' ')
-            });
-            this.chartBackground.attr({
-                width: scrollableWidth,
-                height: scrollableHeight
-            });
-            this.scrollingContainer.style.height = this.chartHeight + 'px';
-            // Set scroll position
-            if (firstTime) {
-                if (scrollableOptions.scrollPositionX) {
-                    this.scrollingContainer.scrollLeft =
-                        this.scrollablePixelsX *
-                            scrollableOptions.scrollPositionX;
-                }
-                if (scrollableOptions.scrollPositionY) {
-                    this.scrollingContainer.scrollTop =
-                        this.scrollablePixelsY *
-                            scrollableOptions.scrollPositionY;
-                }
-            }
-            // Mask behind the left and right side
-            var axisOffset = this.axisOffset,
-                maskTop = this.plotTop - axisOffset[0] - 1,
-                maskLeft = this.plotLeft - axisOffset[3] - 1,
-                maskBottom = this.plotTop + this.plotHeight + axisOffset[2] + 1,
-                maskRight = this.plotLeft + this.plotWidth + axisOffset[1] + 1,
-                maskPlotRight = this.plotLeft + this.plotWidth -
-                    (this.scrollablePixelsX || 0),
-                maskPlotBottom = this.plotTop + this.plotHeight -
-                    (this.scrollablePixelsY || 0),
-                d;
-            if (this.scrollablePixelsX) {
-                d = [
-                    // Left side
-                    ['M', 0, maskTop],
-                    ['L', this.plotLeft - 1, maskTop],
-                    ['L', this.plotLeft - 1, maskBottom],
-                    ['L', 0, maskBottom],
-                    ['Z'],
-                    // Right side
-                    ['M', maskPlotRight, maskTop],
-                    ['L', this.chartWidth, maskTop],
-                    ['L', this.chartWidth, maskBottom],
-                    ['L', maskPlotRight, maskBottom],
-                    ['Z']
-                ];
-            }
-            else if (this.scrollablePixelsY) {
-                d = [
-                    // Top side
-                    ['M', maskLeft, 0],
-                    ['L', maskLeft, this.plotTop - 1],
-                    ['L', maskRight, this.plotTop - 1],
-                    ['L', maskRight, 0],
-                    ['Z'],
-                    // Bottom side
-                    ['M', maskLeft, maskPlotBottom],
-                    ['L', maskLeft, this.chartHeight],
-                    ['L', maskRight, this.chartHeight],
-                    ['L', maskRight, maskPlotBottom],
-                    ['Z']
-                ];
-            }
-            else {
-                d = [['M', 0, 0]];
-            }
-            if (this.redrawTrigger !== 'adjustHeight') {
-                this.scrollableMask.attr({ d: d });
-            }
-        };
-
     });
     _registerModule(_modules, 'Mixins/LegendSymbol.js', [_modules['Core/Globals.js'], _modules['Core/Utilities.js']], function (H, U) {
         /* *
@@ -34841,7 +34502,7 @@
                 }
                 // SVGRenderer needs to know this before drawing elements (#1089,
                 // #1795)
-                group.inverted = series.isCartesian || series.invertable ?
+                group.inverted = pick(series.invertible, series.isCartesian) ?
                     inverted : false;
                 // Draw the graph if any
                 if (series.drawGraph) {
@@ -35781,7 +35442,7 @@
                             // Animate the graph stroke-width.
                             graph.animate(attribs, stateAnimation);
                             while (series['zone-graph-' + i]) {
-                                series['zone-graph-' + i].attr(attribs);
+                                series['zone-graph-' + i].animate(attribs, stateAnimation);
                                 i = i + 1;
                             }
                         }
@@ -38577,6 +38238,412 @@
 
         return Series;
     });
+    _registerModule(_modules, 'Extensions/ScrollablePlotArea.js', [_modules['Core/Animation/AnimationUtilities.js'], _modules['Core/Axis/Axis.js'], _modules['Core/Chart/Chart.js'], _modules['Core/Series/Series.js'], _modules['Core/Globals.js'], _modules['Core/Utilities.js']], function (A, Axis, Chart, Series, H, U) {
+        /* *
+         *
+         *  (c) 2010-2021 Torstein Honsi
+         *
+         *  License: www.highcharts.com/license
+         *
+         *  !!!!!!! SOURCE GETS TRANSPILED BY TYPESCRIPT. EDIT TS FILE ONLY. !!!!!!!
+         *
+         *  Highcharts feature to make the Y axis stay fixed when scrolling the chart
+         *  horizontally on mobile devices. Supports left and right side axes.
+         */
+        /*
+        WIP on vertical scrollable plot area (#9378). To do:
+        - Bottom axis positioning
+        - Test with Gantt
+        - Look for size optimizing the code
+        - API and demos
+         */
+        var stop = A.stop;
+        var addEvent = U.addEvent,
+            createElement = U.createElement,
+            merge = U.merge,
+            pick = U.pick;
+        /**
+         * Options for a scrollable plot area. This feature provides a minimum size for
+         * the plot area of the chart. If the size gets smaller than this, typically
+         * on mobile devices, a native browser scrollbar is presented. This scrollbar
+         * provides smooth scrolling for the contents of the plot area, whereas the
+         * title, legend and unaffected axes are fixed.
+         *
+         * Since v7.1.2, a scrollable plot area can be defined for either horizontal or
+         * vertical scrolling, depending on whether the `minWidth` or `minHeight`
+         * option is set.
+         *
+         * @sample highcharts/chart/scrollable-plotarea
+         *         Scrollable plot area
+         * @sample highcharts/chart/scrollable-plotarea-vertical
+         *         Vertically scrollable plot area
+         * @sample {gantt} highcharts/chart/scrollable-plotarea-vertical
+         *         Gantt chart with vertically scrollable plot area
+         *
+         * @since     6.1.0
+         * @product   highcharts gantt
+         * @apioption chart.scrollablePlotArea
+         */
+        /**
+         * The minimum height for the plot area. If it gets smaller than this, the plot
+         * area will become scrollable.
+         *
+         * @type      {number}
+         * @apioption chart.scrollablePlotArea.minHeight
+         */
+        /**
+         * The minimum width for the plot area. If it gets smaller than this, the plot
+         * area will become scrollable.
+         *
+         * @type      {number}
+         * @apioption chart.scrollablePlotArea.minWidth
+         */
+        /**
+         * The initial scrolling position of the scrollable plot area. Ranges from 0 to
+         * 1, where 0 aligns the plot area to the left and 1 aligns it to the right.
+         * Typically we would use 1 if the chart has right aligned Y axes.
+         *
+         * @type      {number}
+         * @apioption chart.scrollablePlotArea.scrollPositionX
+         */
+        /**
+         * The initial scrolling position of the scrollable plot area. Ranges from 0 to
+         * 1, where 0 aligns the plot area to the top and 1 aligns it to the bottom.
+         *
+         * @type      {number}
+         * @apioption chart.scrollablePlotArea.scrollPositionY
+         */
+        /**
+         * The opacity of mask applied on one of the sides of the plot
+         * area.
+         *
+         * @sample {highcharts} highcharts/chart/scrollable-plotarea-opacity
+         *         Disabled opacity for the mask
+         *
+         * @type        {number}
+         * @default     0.85
+         * @since       7.1.1
+         * @apioption   chart.scrollablePlotArea.opacity
+         */
+        ''; // detach API doclets
+        /* eslint-disable no-invalid-this, valid-jsdoc */
+        addEvent(Chart, 'afterSetChartSize', function (e) {
+            var scrollablePlotArea = this.options.chart.scrollablePlotArea,
+                scrollableMinWidth = scrollablePlotArea && scrollablePlotArea.minWidth,
+                scrollableMinHeight = scrollablePlotArea && scrollablePlotArea.minHeight,
+                scrollablePixelsX,
+                scrollablePixelsY,
+                corrections;
+            if (!this.renderer.forExport) {
+                // The amount of pixels to scroll, the difference between chart
+                // width and scrollable width
+                if (scrollableMinWidth) {
+                    this.scrollablePixelsX = scrollablePixelsX = Math.max(0, scrollableMinWidth - this.chartWidth);
+                    if (scrollablePixelsX) {
+                        this.scrollablePlotBox = merge(this.plotBox);
+                        this.plotWidth += scrollablePixelsX;
+                        if (this.inverted) {
+                            this.clipBox.height += scrollablePixelsX;
+                            this.plotBox.height += scrollablePixelsX;
+                        }
+                        else {
+                            this.clipBox.width += scrollablePixelsX;
+                            this.plotBox.width += scrollablePixelsX;
+                        }
+                        corrections = {
+                            // Corrections for right side
+                            1: { name: 'right', value: scrollablePixelsX }
+                        };
+                    }
+                    // Currently we can only do either X or Y
+                }
+                else if (scrollableMinHeight) {
+                    this.scrollablePixelsY = scrollablePixelsY = Math.max(0, scrollableMinHeight - this.chartHeight);
+                    if (scrollablePixelsY) {
+                        this.scrollablePlotBox = merge(this.plotBox);
+                        this.plotHeight += scrollablePixelsY;
+                        if (this.inverted) {
+                            this.clipBox.width += scrollablePixelsY;
+                            this.plotBox.width += scrollablePixelsY;
+                        }
+                        else {
+                            this.clipBox.height += scrollablePixelsY;
+                            this.plotBox.height += scrollablePixelsY;
+                        }
+                        corrections = {
+                            2: { name: 'bottom', value: scrollablePixelsY }
+                        };
+                    }
+                }
+                if (corrections && !e.skipAxes) {
+                    this.axes.forEach(function (axis) {
+                        // For right and bottom axes, only fix the plot line length
+                        if (corrections[axis.side]) {
+                            // Get the plot lines right in getPlotLinePath,
+                            // temporarily set it to the adjusted plot width.
+                            axis.getPlotLinePath = function () {
+                                var marginName = corrections[axis.side].name,
+                                    correctionValue = corrections[axis.side].value, 
+                                    // axis.right or axis.bottom
+                                    margin = this[marginName],
+                                    path;
+                                // Temporarily adjust
+                                this[marginName] = margin - correctionValue;
+                                path = H.Axis.prototype.getPlotLinePath.apply(this, arguments);
+                                // Reset
+                                this[marginName] = margin;
+                                return path;
+                            };
+                        }
+                        else {
+                            // Apply the corrected plotWidth
+                            axis.setAxisSize();
+                            axis.setAxisTranslation();
+                        }
+                    });
+                }
+            }
+        });
+        addEvent(Chart, 'render', function () {
+            if (this.scrollablePixelsX || this.scrollablePixelsY) {
+                if (this.setUpScrolling) {
+                    this.setUpScrolling();
+                }
+                this.applyFixed();
+            }
+            else if (this.fixedDiv) { // Has been in scrollable mode
+                this.applyFixed();
+            }
+        });
+        /**
+         * @private
+         * @function Highcharts.Chart#setUpScrolling
+         * @return {void}
+         */
+        Chart.prototype.setUpScrolling = function () {
+            var _this = this;
+            var attribs = {
+                    WebkitOverflowScrolling: 'touch',
+                    overflowX: 'hidden',
+                    overflowY: 'hidden'
+                };
+            if (this.scrollablePixelsX) {
+                attribs.overflowX = 'auto';
+            }
+            if (this.scrollablePixelsY) {
+                attribs.overflowY = 'auto';
+            }
+            // Insert a container with position relative
+            // that scrolling and fixed container renders to (#10555)
+            this.scrollingParent = createElement('div', {
+                className: 'highcharts-scrolling-parent'
+            }, {
+                position: 'relative'
+            }, this.renderTo);
+            // Add the necessary divs to provide scrolling
+            this.scrollingContainer = createElement('div', {
+                'className': 'highcharts-scrolling'
+            }, attribs, this.scrollingParent);
+            // On scroll, reset the chart position because it applies to the scrolled
+            // container
+            addEvent(this.scrollingContainer, 'scroll', function () {
+                if (_this.pointer) {
+                    delete _this.pointer.chartPosition;
+                }
+            });
+            this.innerContainer = createElement('div', {
+                'className': 'highcharts-inner-container'
+            }, null, this.scrollingContainer);
+            // Now move the container inside
+            this.innerContainer.appendChild(this.container);
+            // Don't run again
+            this.setUpScrolling = null;
+        };
+        /**
+         * These elements are moved over to the fixed renderer and stay fixed when the
+         * user scrolls the chart
+         * @private
+         */
+        Chart.prototype.moveFixedElements = function () {
+            var container = this.container,
+                fixedRenderer = this.fixedRenderer,
+                fixedSelectors = [
+                    '.highcharts-contextbutton',
+                    '.highcharts-credits',
+                    '.highcharts-legend',
+                    '.highcharts-legend-checkbox',
+                    '.highcharts-navigator-series',
+                    '.highcharts-navigator-xaxis',
+                    '.highcharts-navigator-yaxis',
+                    '.highcharts-navigator',
+                    '.highcharts-reset-zoom',
+                    '.highcharts-scrollbar',
+                    '.highcharts-subtitle',
+                    '.highcharts-title'
+                ],
+                axisClass;
+            if (this.scrollablePixelsX && !this.inverted) {
+                axisClass = '.highcharts-yaxis';
+            }
+            else if (this.scrollablePixelsX && this.inverted) {
+                axisClass = '.highcharts-xaxis';
+            }
+            else if (this.scrollablePixelsY && !this.inverted) {
+                axisClass = '.highcharts-xaxis';
+            }
+            else if (this.scrollablePixelsY && this.inverted) {
+                axisClass = '.highcharts-yaxis';
+            }
+            if (axisClass) {
+                fixedSelectors.push(axisClass + ":not(.highcharts-radial-axis)", axisClass + "-labels:not(.highcharts-radial-axis-labels)");
+            }
+            fixedSelectors.forEach(function (className) {
+                [].forEach.call(container.querySelectorAll(className), function (elem) {
+                    (elem.namespaceURI === fixedRenderer.SVG_NS ?
+                        fixedRenderer.box :
+                        fixedRenderer.box.parentNode).appendChild(elem);
+                    elem.style.pointerEvents = 'auto';
+                });
+            });
+        };
+        /**
+         * @private
+         * @function Highcharts.Chart#applyFixed
+         * @return {void}
+         */
+        Chart.prototype.applyFixed = function () {
+            var _this = this;
+            var _a,
+                _b,
+                _c;
+            var fixedRenderer,
+                scrollableWidth,
+                scrollableHeight,
+                firstTime = !this.fixedDiv,
+                chartOptions = this.options.chart,
+                scrollableOptions = chartOptions.scrollablePlotArea;
+            // First render
+            if (firstTime) {
+                this.fixedDiv = createElement('div', {
+                    className: 'highcharts-fixed'
+                }, {
+                    position: 'absolute',
+                    overflow: 'hidden',
+                    pointerEvents: 'none',
+                    zIndex: (((_a = chartOptions.style) === null || _a === void 0 ? void 0 : _a.zIndex) || 0) + 2,
+                    top: 0
+                }, null, true);
+                (_b = this.scrollingContainer) === null || _b === void 0 ? void 0 : _b.parentNode.insertBefore(this.fixedDiv, this.scrollingContainer);
+                this.renderTo.style.overflow = 'visible';
+                this.fixedRenderer = fixedRenderer = new H.Renderer(this.fixedDiv, this.chartWidth, this.chartHeight, (_c = this.options.chart) === null || _c === void 0 ? void 0 : _c.style);
+                // Mask
+                this.scrollableMask = fixedRenderer
+                    .path()
+                    .attr({
+                    fill: this.options.chart.backgroundColor || '#fff',
+                    'fill-opacity': pick(scrollableOptions.opacity, 0.85),
+                    zIndex: -1
+                })
+                    .addClass('highcharts-scrollable-mask')
+                    .add();
+                addEvent(this, 'afterShowResetZoom', this.moveFixedElements);
+                addEvent(this, 'afterLayOutTitles', this.moveFixedElements);
+                addEvent(Axis, 'afterInit', function () {
+                    _this.scrollableDirty = true;
+                });
+                addEvent(Series, 'show', function () {
+                    _this.scrollableDirty = true;
+                });
+            }
+            else {
+                // Set the size of the fixed renderer to the visible width
+                this.fixedRenderer.setSize(this.chartWidth, this.chartHeight);
+            }
+            if (this.scrollableDirty || firstTime) {
+                this.scrollableDirty = false;
+                this.moveFixedElements();
+            }
+            // Increase the size of the scrollable renderer and background
+            scrollableWidth = this.chartWidth + (this.scrollablePixelsX || 0);
+            scrollableHeight = this.chartHeight + (this.scrollablePixelsY || 0);
+            stop(this.container);
+            this.container.style.width = scrollableWidth + 'px';
+            this.container.style.height = scrollableHeight + 'px';
+            this.renderer.boxWrapper.attr({
+                width: scrollableWidth,
+                height: scrollableHeight,
+                viewBox: [0, 0, scrollableWidth, scrollableHeight].join(' ')
+            });
+            this.chartBackground.attr({
+                width: scrollableWidth,
+                height: scrollableHeight
+            });
+            this.scrollingContainer.style.height = this.chartHeight + 'px';
+            // Set scroll position
+            if (firstTime) {
+                if (scrollableOptions.scrollPositionX) {
+                    this.scrollingContainer.scrollLeft =
+                        this.scrollablePixelsX *
+                            scrollableOptions.scrollPositionX;
+                }
+                if (scrollableOptions.scrollPositionY) {
+                    this.scrollingContainer.scrollTop =
+                        this.scrollablePixelsY *
+                            scrollableOptions.scrollPositionY;
+                }
+            }
+            // Mask behind the left and right side
+            var axisOffset = this.axisOffset,
+                maskTop = this.plotTop - axisOffset[0] - 1,
+                maskLeft = this.plotLeft - axisOffset[3] - 1,
+                maskBottom = this.plotTop + this.plotHeight + axisOffset[2] + 1,
+                maskRight = this.plotLeft + this.plotWidth + axisOffset[1] + 1,
+                maskPlotRight = this.plotLeft + this.plotWidth -
+                    (this.scrollablePixelsX || 0),
+                maskPlotBottom = this.plotTop + this.plotHeight -
+                    (this.scrollablePixelsY || 0),
+                d;
+            if (this.scrollablePixelsX) {
+                d = [
+                    // Left side
+                    ['M', 0, maskTop],
+                    ['L', this.plotLeft - 1, maskTop],
+                    ['L', this.plotLeft - 1, maskBottom],
+                    ['L', 0, maskBottom],
+                    ['Z'],
+                    // Right side
+                    ['M', maskPlotRight, maskTop],
+                    ['L', this.chartWidth, maskTop],
+                    ['L', this.chartWidth, maskBottom],
+                    ['L', maskPlotRight, maskBottom],
+                    ['Z']
+                ];
+            }
+            else if (this.scrollablePixelsY) {
+                d = [
+                    // Top side
+                    ['M', maskLeft, 0],
+                    ['L', maskLeft, this.plotTop - 1],
+                    ['L', maskRight, this.plotTop - 1],
+                    ['L', maskRight, 0],
+                    ['Z'],
+                    // Bottom side
+                    ['M', maskLeft, maskPlotBottom],
+                    ['L', maskLeft, this.chartHeight],
+                    ['L', maskRight, this.chartHeight],
+                    ['L', maskRight, maskPlotBottom],
+                    ['Z']
+                ];
+            }
+            else {
+                d = [['M', 0, 0]];
+            }
+            if (this.redrawTrigger !== 'adjustHeight') {
+                this.scrollableMask.attr({ d: d });
+            }
+        };
+
+    });
     _registerModule(_modules, 'Core/Axis/StackingAxis.js', [_modules['Core/Animation/AnimationUtilities.js'], _modules['Core/Utilities.js']], function (A, U) {
         /* *
          *
@@ -38794,6 +38861,7 @@
             defined = U.defined,
             destroyObjectProperties = U.destroyObjectProperties,
             format = U.format,
+            isArray = U.isArray,
             isNumber = U.isNumber,
             pick = U.pick;
         /**
@@ -39215,6 +39283,9 @@
                     }
                 }
                 else if (stacking === 'group') {
+                    if (isArray(y)) {
+                        y = y[0];
+                    }
                     // In this stack, the total is the number of valid points
                     if (y !== null) {
                         stack.total = (stack.total || 0) + 1;
@@ -46770,6 +46841,25 @@
                 return (this.chart.pointCount < (this.options.animationLimit || 250) ?
                     'animate' :
                     'attr');
+            };
+            /**
+             * @private
+             * @function Highcharts.XRangeSeries#isPointInside
+             */
+            XRangeSeries.prototype.isPointInside = function (point) {
+                var shapeArgs = point.shapeArgs,
+                    plotX = point.plotX,
+                    plotY = point.plotY;
+                if (!shapeArgs) {
+                    return _super.prototype.isPointInside.apply(this, arguments);
+                }
+                var isInside = typeof plotX !== 'undefined' &&
+                        typeof plotY !== 'undefined' &&
+                        plotY >= 0 &&
+                        plotY <= this.yAxis.len &&
+                        shapeArgs.x + shapeArgs.width >= 0 &&
+                        plotX <= this.xAxis.len;
+                return isInside;
             };
             /* *
              *
@@ -54848,6 +54938,7 @@
                  * @sample {highstock} stock/rangeselector/enabled/
                  *         Disable the range selector
                  *
+                 * @type {boolean|undefined}
                  * @default {highstock} true
                  */
                 enabled: void 0,

@@ -1,9 +1,9 @@
 /**
- * @license Highstock JS v9.0.0 (2021-02-02)
+ * @license Highstock JS v9.0.0 (2021-02-10)
  *
  * Slow Stochastic series type for Highstock
  *
- * (c) 2010-2019 Pawel Fus
+ * (c) 2010-2021 Pawel Fus
  *
  * License: www.highcharts.com/license
  */

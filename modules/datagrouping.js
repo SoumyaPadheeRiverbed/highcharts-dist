@@ -1,9 +1,9 @@
 /*
- Highstock JS v9.0.0 (2021-02-02)
+ Highstock JS v9.0.0 (2021-02-10)
 
  Data grouping module
 
- (c) 2010-2019 Torstein Hnsi
+ (c) 2010-2021 Torstein Hnsi
 
  License: www.highcharts.com/license
 */

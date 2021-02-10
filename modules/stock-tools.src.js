@@ -1,9 +1,9 @@
 /**
- * @license Highstock JS v9.0.0 (2021-02-02)
+ * @license Highstock JS v9.0.0 (2021-02-10)
  *
  * Advanced Highstock tools
  *
- * (c) 2010-2019 Highsoft AS
+ * (c) 2010-2021 Highsoft AS
  * Author: Torstein Honsi
  *
  * License: www.highcharts.com/license
@@ -4123,7 +4123,6 @@
                     // TO DO: Polyfill for IE11?
                     !closestPolyfill(clickEvent.target, '.' + PREFIX + 'popup')) {
                     fireEvent(navigation, 'closePopup');
-                    navigation.deselectAnnotation();
                 }
                 if (!selectedButton || !selectedButton.start) {
                     return;
@@ -4594,7 +4593,6 @@
                 }
                 else {
                     // Deselect current:
-                    navigation.deselectAnnotation();
                     fireEvent(navigation, 'closePopup');
                 }
                 // Let bubble event to chart.click:
@@ -4930,6 +4928,9 @@
                     }
                 }
             }
+        });
+        addEvent(NavigationBindings, 'closePopup', function () {
+            this.deselectAnnotation();
         });
 
         return NavigationBindings;
